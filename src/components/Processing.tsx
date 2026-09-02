@@ -22,7 +22,7 @@ export default function Processing({ frames, onDone, onError }: Props) {
   const [p, setP] = useState(0);
   const [preview, setPreview] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([
-    `» ${frames.length} quadros · 384×512 · pipeline iniciado`,
+    `» pipeline v3 (visual hull) · ${frames.length} quadros · 384×512`,
   ]);
   const logRef = useRef<HTMLDivElement>(null);
   const doneRef = useRef(false);

@@ -166,6 +166,9 @@ export default function Scanner({ onReady, onDemo, demoBusy }: Props) {
           <div className="flex items-center gap-3 text-muted">
             <span>{res || "———"}</span>
             <span className="hidden text-scan sm:inline">3:4 · 384×512</span>
+            <span className="rounded-sm border border-scan/40 px-1.5 py-0.5 text-[9px] tracking-[0.1em] text-scan">
+              v3·HULL
+            </span>
           </div>
         </div>
 

@@ -16,7 +16,7 @@ export const ANGLES = 96; // colunas da malha
 export const ROWS = 72; // linhas da malha
 const R_MAX = 0.62;
 const R_MIN = 0.02;
-const COVER = 1.35; // cada quadro cobre 1,35 fatias → zona de blend entre vizinhos
+const COVER = 1.2; // cada quadro cobre 1,2 fatias → zona curta de blend entre vizinhos
 
 const tick = () => new Promise<void>((r) => setTimeout(r, 0));
 const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
@@ -497,8 +497,9 @@ export async function buildModel(
     const s = d0 >= 0 ? 1 : -1;
     const k1 = mod(c0 + s, N);
     const d1 = d0 - s;
-    let w0 = Math.max(0, coverHalf - Math.abs(d0));
-    let w1 = Math.max(0, coverHalf - Math.abs(d1));
+    // decaimento cúbico: a vista mais próxima domina a coluna → sem "fantasmas" de paralaxe
+    let w0 = Math.max(0, coverHalf - Math.abs(d0)) ** 3;
+    let w1 = Math.max(0, coverHalf - Math.abs(d1)) ** 3;
     const wSum = w0 + w1 || 1;
     w0 /= wSum;
     w1 /= wSum;
