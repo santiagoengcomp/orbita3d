@@ -6,12 +6,12 @@ import { IconAlert, IconLayers, IconOrbit, IconShutter, IconTrash, IconX } from 
 type CamState = "starting" | "live" | "error";
 
 const TIPS = [
-  "Luz difusa e uniforme revela mais relevo na malha.",
+  "O fundo é removido automaticamente — o app isola só o objeto.",
   "Mantenha a mesma distância ao orbitar o objeto.",
-  "Fundo liso e neutro = silhueta perfeita (visual hull).",
+  "Luz difusa e uniforme revela mais relevo na malha.",
   "Gire devagar: 30° entre cada captura é o ideal.",
   "Centralize o objeto e enquadre ele por inteiro.",
-  "Evite superfícies espelhadas ou transparentes.",
+  "Evite reflexos fortes e objetos encostados na peça.",
 ];
 
 interface Props {

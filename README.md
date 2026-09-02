@@ -5,7 +5,7 @@ Aplicativo web instalável (PWA) que transforma a câmera do celular em um scann
 ## Como o modelo é reconstruído
 
 1. **Equalização** — brilho dos quadros é normalizado;
-2. **Silhuetas (visual hull)** — o fundo é estimado pela borda de cada quadro e o objeto é recortado; a meia-largura em cada altura vira o **raio do volume** naquele ângulo;
+2. **Reconhecimento do objeto** — flood-fill remove o fundo e componentes conectados descartam interferências (mãos, objetos ao fundo, reflexos); a silhueta resultante vira o **raio do volume** em cada altura/ângulo (visual hull);
 3. **Textura 360°** — as vistas são reprojetadas e costuradas com blend (reprojeição cilíndrica com zona de sobreposição);
 4. **Nuvem de pontos** — ~12 mil amostras coloridas projetadas na superfície do hull;
 5. **Malha + relevo** — grade angular 96×72 com o perfil do hull e micro-relevo esculpido pela luminância da textura (ajustável ao vivo no visualizador).

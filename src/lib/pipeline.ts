@@ -8,7 +8,7 @@ export const MODEL_H = 1.5;
 export const MIN_FRAMES = 8;
 export const TARGET_FRAMES = 16;
 export const MAX_FRAMES = 24;
-export const RELIEF_DEFAULT = 0.05;
+export const RELIEF_DEFAULT = 0.024;
 export const RELIEF_MAX = 0.11;
 
 const SLICE_W = 144; // fatia de cada quadro na textura (1/N da circunferência)
@@ -64,119 +64,262 @@ function meanLuma(d: ImageData): number {
   return s / Math.max(1, n);
 }
 
-/* ================= silhueta (visual hull) ================= */
+/* ================= reconhecimento do objeto ================= */
 interface Profile {
   hw: Float32Array; // meia-largura normalizada por linha do objeto
   vTop: number; // topo do objeto no quadro (0..1)
   vBot: number;
   ok: boolean;
-  spanRows: number;
+  area: number; // fração do quadro ocupada
 }
 
-function extractProfile(d: ImageData): Profile {
-  const W = d.width;
-  const H = d.height;
-  const px = d.data;
+/**
+ * Isole o objeto e descarte o cenário:
+ *  1. flood-fill a partir das bordas (fundo) com tolerância adaptativa;
+ *  2. o que o flood não alcança = primeiro plano;
+ *  3. componentes conectados → mantém a peça principal e partes unidas a ela,
+ *     descartando interferências (mãos soltas, objetos ao fundo, reflexos).
+ */
+function segmentObject(src: HTMLCanvasElement): { profile: Profile; maskUrl: string | null } {
+  const SW = 192;
+  const SH = 256;
+  const N = SW * SH;
+  const c = document.createElement("canvas");
+  c.width = SW;
+  c.height = SH;
+  const ctx = c.getContext("2d", { willReadFrequently: true })!;
+  ctx.drawImage(src, 0, 0, SW, SH);
+  const d = ctx.getImageData(0, 0, SW, SH).data;
 
-  // cor de fundo: mediana da borda do quadro
-  const eR: number[] = [];
-  const eG: number[] = [];
-  const eB: number[] = [];
-  const push = (x: number, y: number) => {
-    const i = (y * W + x) * 4;
-    eR.push(px[i]);
-    eG.push(px[i + 1]);
-    eB.push(px[i + 2]);
+  // média + desvio das bordas (referência de fundo)
+  let sR = 0;
+  let sG = 0;
+  let sB = 0;
+  let s2 = 0;
+  let n = 0;
+  const sample = (x: number, y: number) => {
+    const i = (y * SW + x) * 4;
+    sR += d[i];
+    sG += d[i + 1];
+    sB += d[i + 2];
+    s2 += d[i] * d[i] + d[i + 1] * d[i + 1] + d[i + 2] * d[i + 2];
+    n++;
   };
-  for (let x = 0; x < W; x += 4) {
-    push(x, 2);
-    push(x, H - 3);
+  for (let x = 0; x < SW; x += 2) {
+    sample(x, 1);
+    sample(x, SH - 2);
   }
-  for (let y = 0; y < H; y += 4) {
-    push(2, y);
-    push(W - 3, y);
+  for (let y = 0; y < SH; y += 2) {
+    sample(1, y);
+    sample(SW - 2, y);
   }
-  const med = (a: number[]) => {
-    a.sort((p, q) => p - q);
-    return a[a.length >> 1];
-  };
-  const bR = med(eR);
-  const bG = med(eG);
-  const bB = med(eB);
+  const mR = sR / n;
+  const mG = sG / n;
+  const mB = sB / n;
+  const borderStd = Math.sqrt(Math.max(0, s2 / n - (mR * mR + mG * mG + mB * mB)));
+  const tol0 = clamp(2.4 * borderStd + 22, 38, 115);
 
-  // varredura por linha: pixels que divergem do fundo
-  const rowL = new Int32Array(H).fill(-1);
-  const rowR = new Int32Array(H).fill(-1);
-  for (let y = 0; y < H; y++) {
-    let l = -1;
-    let r = -1;
-    let cnt = 0;
-    const off = y * W * 4;
-    for (let x = 0; x < W; x++) {
-      const i = off + x * 4;
-      const dr = px[i] - bR;
-      const dg = px[i + 1] - bG;
-      const db = px[i + 2] - bB;
-      const dist = Math.sqrt(dr * dr + dg * dg + db * db);
-      const ch = Math.abs(dr - dg) + Math.abs(dg - db) + Math.abs(db - dr);
-      // sombra neutra (dist média + cromática baixa) é ignorada
-      if (dist > 85 || (dist > 45 && ch > 24)) {
-        if (l < 0) l = x;
-        r = x;
-        cnt++;
+  // flood-fill por similaridade local a partir das bordas
+  const flood = (tol: number): Uint8Array => {
+    const reached = new Uint8Array(N);
+    const stack = new Int32Array(N);
+    let sp = 0;
+    const st2 = tol * 1.15 * (tol * 1.15);
+    const t2 = tol * tol;
+    const seed = (p: number) => {
+      const i = p * 4;
+      const dr = d[i] - mR;
+      const dg = d[i + 1] - mG;
+      const db = d[i + 2] - mB;
+      if (dr * dr + dg * dg + db * db < st2) {
+        reached[p] = 1;
+        stack[sp++] = p;
+      }
+    };
+    for (let x = 0; x < SW; x++) {
+      seed(x);
+      seed((SH - 1) * SW + x);
+    }
+    for (let y = 0; y < SH; y++) {
+      seed(y * SW);
+      seed(y * SW + SW - 1);
+    }
+    while (sp > 0) {
+      const p = stack[--sp];
+      const px = p % SW;
+      const py = (p / SW) | 0;
+      const i = p * 4;
+      const cr = d[i];
+      const cg = d[i + 1];
+      const cb = d[i + 2];
+      const grow = (q: number) => {
+        if (reached[q]) return;
+        const j = q * 4;
+        const dr = d[j] - cr;
+        const dg = d[j + 1] - cg;
+        const db = d[j + 2] - cb;
+        if (dr * dr + dg * dg + db * db < t2) {
+          reached[q] = 1;
+          stack[sp++] = q;
+        }
+      };
+      if (px > 0) grow(p - 1);
+      if (px < SW - 1) grow(p + 1);
+      if (py > 0) grow(p - SW);
+      if (py < SH - 1) grow(p + SW);
+    }
+    return reached;
+  };
+
+  let reached = flood(tol0);
+  let reachedCount = 0;
+  for (let i = 0; i < N; i++) reachedCount += reached[i];
+  if (reachedCount < N * 0.35) reached = flood(tol0 * 1.6); // fundo com gradiente: amplia tolerância
+
+  // rotula componentes conectados do primeiro plano
+  const labels = new Int32Array(N).fill(-1);
+  const comps: { area: number; minX: number; maxX: number; minY: number; maxY: number }[] = [];
+  const stack2: number[] = [];
+  for (let p = 0; p < N; p++) {
+    if (reached[p] || labels[p] >= 0) continue;
+    const id = comps.length;
+    const info = { area: 0, minX: SW, maxX: 0, minY: SH, maxY: 0 };
+    stack2.length = 0;
+    stack2.push(p);
+    labels[p] = id;
+    while (stack2.length) {
+      const q = stack2.pop()!;
+      info.area++;
+      const qx = q % SW;
+      const qy = (q / SW) | 0;
+      if (qx < info.minX) info.minX = qx;
+      if (qx > info.maxX) info.maxX = qx;
+      if (qy < info.minY) info.minY = qy;
+      if (qy > info.maxY) info.maxY = qy;
+      if (qx > 0 && labels[q - 1] < 0 && !reached[q - 1]) {
+        labels[q - 1] = id;
+        stack2.push(q - 1);
+      }
+      if (qx < SW - 1 && labels[q + 1] < 0 && !reached[q + 1]) {
+        labels[q + 1] = id;
+        stack2.push(q + 1);
+      }
+      if (qy > 0 && labels[q - SW] < 0 && !reached[q - SW]) {
+        labels[q - SW] = id;
+        stack2.push(q - SW);
+      }
+      if (qy < SH - 1 && labels[q + SW] < 0 && !reached[q + SW]) {
+        labels[q + SW] = id;
+        stack2.push(q + SW);
       }
     }
-    if (cnt >= 4) {
-      rowL[y] = l;
-      rowR[y] = r;
+    comps.push(info);
+  }
+
+  const empty: Profile = { hw: new Float32Array(ROWS), vTop: 0, vBot: 1, ok: false, area: 0 };
+  if (!comps.length) return { profile: empty, maskUrl: null };
+
+  // peça principal + partes relevantes conectadas ao lado dela
+  let main = 0;
+  for (let i = 1; i < comps.length; i++) if (comps[i].area > comps[main].area) main = i;
+  const M = comps[main];
+  const keep = comps.map(
+    (ci, i) =>
+      i === main ||
+      (ci.area >= 0.18 * M.area &&
+        ci.minY <= M.maxY &&
+        ci.maxY >= M.minY && // sobreposição vertical (ex.: alça separada)
+        (ci.minX > M.maxX ? ci.minX - M.maxX : M.minX - ci.maxX) <= 14)
+  );
+
+  const mask = new Uint8Array(N);
+  let area = 0;
+  let minX = SW;
+  let maxX = 0;
+  let minY = SH;
+  let maxY = 0;
+  for (let p = 0; p < N; p++) {
+    const l = labels[p];
+    if (l >= 0 && keep[l]) {
+      mask[p] = 1;
+      area++;
+      const x = p % SW;
+      const y = (p / SW) | 0;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
     }
   }
 
-  let firstY = -1;
-  let lastY = -1;
-  let spanRows = 0;
-  for (let y = 0; y < H; y++) {
-    if (rowL[y] >= 0) {
-      if (firstY < 0) firstY = y;
-      lastY = y;
-      spanRows++;
-    }
-  }
-  if (firstY < 0 || lastY - firstY < H * 0.1 || spanRows < (lastY - firstY) * 0.5) {
-    return { hw: new Float32Array(ROWS), vTop: 0, vBot: 1, ok: false, spanRows };
-  }
+  const areaRatio = area / N;
+  const bboxW = maxX - minX;
+  const bboxH = maxY - minY;
+  const okFlag = areaRatio >= 0.012 && areaRatio <= 0.7 && bboxH >= SH * 0.16 && bboxW >= SW * 0.05;
 
-  // meia-largura em ROWS amostras ao longo do objeto
+  // perfil de larguras → raios do hull
   const hw = new Float32Array(ROWS);
-  const halfW = W / 2;
-  for (let i = 0; i < ROWS; i++) {
-    const y = Math.round(firstY + (i / (ROWS - 1)) * (lastY - firstY));
-    hw[i] = rowL[y] >= 0 ? clamp((rowR[y] - rowL[y]) / 2 / halfW, 0, 1.08) : -1;
-  }
-  // interpola lacunas
-  for (let i = 0; i < ROWS; i++) {
-    if (hw[i] < 0) {
-      let a = i - 1;
-      let b = i + 1;
-      while (a >= 0 && hw[a] < 0) a--;
-      while (b < ROWS && hw[b] < 0) b++;
-      const va = a >= 0 ? hw[a] : 0;
-      const vb = b < ROWS ? hw[b] : 0;
-      hw[i] = a >= 0 && b < ROWS ? va + ((vb - va) * (i - a)) / (b - a) : a >= 0 ? va : vb;
-    }
-  }
-  // suaviza na vertical
-  const tmp = new Float32Array(ROWS);
-  for (let pass = 0; pass < 2; pass++) {
+  if (okFlag) {
     for (let i = 0; i < ROWS; i++) {
-      const a = hw[Math.max(0, i - 1)];
-      const b = hw[i];
-      const c = hw[Math.min(ROWS - 1, i + 1)];
-      tmp[i] = (a + b * 2 + c) / 4;
+      const y = Math.round(minY + (i / (ROWS - 1)) * bboxH);
+      let l = -1;
+      let r = -1;
+      for (let x = minX; x <= maxX; x++)
+        if (mask[y * SW + x]) {
+          l = x;
+          break;
+        }
+      if (l < 0) {
+        hw[i] = 0.015;
+        continue;
+      }
+      for (let x = maxX; x >= minX; x--)
+        if (mask[y * SW + x]) {
+          r = x;
+          break;
+        }
+      hw[i] = clamp((r - l) / 2 / (SW / 2), 0.015, 1.08);
     }
-    hw.set(tmp);
+    const tmp = new Float32Array(ROWS);
+    for (let pass = 0; pass < 2; pass++) {
+      for (let i = 0; i < ROWS; i++) {
+        const a = hw[Math.max(0, i - 1)];
+        const b = hw[i];
+        const cc = hw[Math.min(ROWS - 1, i + 1)];
+        tmp[i] = (a + b * 2 + cc) / 4;
+      }
+      hw.set(tmp);
+    }
   }
-  return { hw, vTop: firstY / (H - 1), vBot: lastY / (H - 1), ok: true, spanRows };
+
+  // prova visual: máscara do quadro (fundo escurecido, objeto em evidência)
+  const img = ctx.createImageData(SW, SH);
+  for (let p = 0; p < N; p++) {
+    const i = p * 4;
+    if (mask[p]) {
+      img.data[i] = 63;
+      img.data[i + 1] = 224;
+      img.data[i + 2] = 197;
+      img.data[i + 3] = 235;
+    } else {
+      img.data[i] = d[i] * 0.22;
+      img.data[i + 1] = d[i + 1] * 0.22;
+      img.data[i + 2] = d[i + 2] * 0.22;
+      img.data[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  if (okFlag) {
+    ctx.strokeStyle = "#ff7a1f";
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(minX + 0.5, minY + 0.5, bboxW - 1, bboxH - 1);
+  }
+  const maskUrl = c.toDataURL("image/jpeg", 0.72);
+
+  return {
+    profile: { hw, vTop: minY / (SH - 1), vBot: maxY / (SH - 1), ok: okFlag, area: areaRatio },
+    maskUrl,
+  };
 }
 
 /* ================= pipeline principal ================= */
@@ -187,8 +330,8 @@ export async function buildModel(
   const N = frames.length;
   const base = [0, 6, 32, 62, 82];
   const span = [6, 26, 30, 20, 18];
-  const report = (step: number, frac: number, log?: string) =>
-    onProgress({ step, p: clamp(base[step] + span[step] * frac, 0, 99), log });
+  const report = (step: number, frac: number, log?: string, preview?: string) =>
+    onProgress({ step, p: clamp(base[step] + span[step] * frac, 0, 99), log, preview });
 
   /* ---- passo 0 · equalização de exposição ---- */
   const datas = frames.map((f) => getData(f.canvas));
@@ -210,10 +353,17 @@ export async function buildModel(
   await tick();
   report(0, 1, `exposição equalizada · luminância-alvo ${target.toFixed(0)} · ganho médio ×${avgMult.toFixed(2)}`);
 
-  /* ---- passo 1 · silhuetas ---- */
+  /* ---- passo 1 · reconhecimento do objeto ---- */
   const profiles: Profile[] = [];
+  let maskUrl: string | null = null;
   for (let i = 0; i < N; i++) {
-    profiles.push(extractProfile(datas[i]));
+    const seg = segmentObject(frames[i].canvas);
+    profiles.push(seg.profile);
+    if (i === 0 && seg.maskUrl) {
+      maskUrl = seg.maskUrl;
+      report(1, 1 / N, undefined, maskUrl);
+      await tick();
+    }
     if (i % 4 === 3 || i === N - 1) {
       report(1, (i + 1) / N);
       await tick();
@@ -223,11 +373,21 @@ export async function buildModel(
   const okCount = okFlags.filter(Boolean).length;
   const hull = okCount >= Math.max(3, Math.ceil(N * 0.4));
   if (hull) {
-    report(1, 1, `silhueta isolada em ${okCount}/${N} quadros · visual hull ativo`);
+    const meanArea =
+      profiles.filter((_, i) => okFlags[i]).reduce((a, p) => a + p.area, 0) / okCount;
+    report(
+      1,
+      1,
+      `objeto reconhecido em ${okCount}/${N} quadros · ocupa ~${Math.round(meanArea * 100)}% do quadro · interferências descartadas`
+    );
   } else {
-    report(1, 1, `silhueta em apenas ${okCount}/${N} quadros — fallback cilíndrico (use fundo liso)`);
+    report(
+      1,
+      1,
+      `reconhecimento fraco (${okCount}/${N}) — fundo confuso ou peça pequena · fallback cilíndrico`
+    );
   }
-  // completa quadros sem silhueta com a média dos vizinhos
+  // completa quadros sem reconhecimento com a média dos vizinhos
   if (hull && okCount < N) {
     for (let i = 0; i < N; i++) {
       if (profiles[i].ok) continue;
@@ -247,18 +407,18 @@ export async function buildModel(
       const pb = profiles[mod(b, N)].hw;
       const hw = new Float32Array(ROWS);
       for (let k = 0; k < ROWS; k++) hw[k] = (pa[k] * db + pb[k] * da) / (da + db);
-      profiles[i] = { hw, vTop: 0, vBot: 1, ok: true, spanRows: 0 };
+      profiles[i] = { hw, vTop: 0, vBot: 1, ok: true, area: 0 };
     }
   }
   // extensão vertical global do objeto (mediana dos quadros válidos)
   let vTopG = 0;
   let vBotG = 1;
   if (hull) {
-    const tops = profiles.filter((_, i) => okFlags[i]).map((p) => p.vTop).sort((a, b) => a - b);
-    const bots = profiles.filter((_, i) => okFlags[i]).map((p) => p.vBot).sort((a, b) => a - b);
+    const tops = profiles.filter((_, i) => okFlags[i]).map((p) => p.vTop).sort((x, y) => x - y);
+    const bots = profiles.filter((_, i) => okFlags[i]).map((p) => p.vBot).sort((x, y) => x - y);
     vTopG = tops[tops.length >> 1];
     vBotG = bots[bots.length >> 1];
-    report(1, 1, `objeto ocupa ${Math.round((vBotG - vTopG) * 100)}% da altura do quadro`);
+    report(1, 1, `peça ocupa ${Math.round((vBotG - vTopG) * 100)}% da altura · volume normalizado`);
   }
 
   /* ---- grade angular de raios (hull) ---- */
@@ -284,7 +444,16 @@ export async function buildModel(
           const im = Math.max(0, i - 1);
           const ip = Math.min(ROWS - 1, i + 1);
           tmp[jc + i] =
-            (grid[jm + im] + grid[jm + i] * 2 + grid[jm + ip] + grid[jc + im] + grid[jc + i] * 4 + grid[jc + ip] + grid[jp + im] + grid[jp + i] * 2 + grid[jp + ip]) / 16;
+            (grid[jm + im] +
+              grid[jm + i] * 2 +
+              grid[jm + ip] +
+              grid[jc + im] +
+              grid[jc + i] * 4 +
+              grid[jc + ip] +
+              grid[jp + im] +
+              grid[jp + i] * 2 +
+              grid[jp + ip]) /
+            16;
         }
       }
       grid.set(tmp);
@@ -295,10 +464,11 @@ export async function buildModel(
   let maxG = 0.12;
   for (let k = 0; k < grid.length; k++) if (grid[k] > maxG) maxG = grid[k];
   const gScale = R_MAX / maxG;
-  const radius = (j: number, i: number) => clamp(grid[mod(j, ANGLES) * ROWS + i] * gScale, R_MIN, R_MAX * 1.12);
+  const radius = (j: number, i: number) =>
+    clamp(grid[mod(j, ANGLES) * ROWS + i] * gScale, R_MIN, R_MAX * 1.12);
   await tick();
 
-  /* ---- passo 2 · costura da textura 360° ---- */
+  /* ---- passo 2 · quebra-cabeça: costura da textura 360° ---- */
   const W_T = N * SLICE_W;
   const texCanvas = document.createElement("canvas");
   texCanvas.width = W_T;
@@ -306,8 +476,8 @@ export async function buildModel(
   const tctx = texCanvas.getContext("2d", { willReadFrequently: true })!;
   const out = tctx.createImageData(W_T, WORK_H);
   const op = out.data;
-  const srcPerOut = WORK_W / (SLICE_W * COVER); // px de origem por px de saída
-  const coverHalf = COVER / 2; // meia-cobertura em fatias
+  const srcPerOut = WORK_W / (SLICE_W * COVER);
+  const coverHalf = COVER / 2;
   const blendSample = (arr: Uint8ClampedArray, X: number, y: number, w: number, o: number) => {
     const x0 = clamp(Math.floor(X), 0, WORK_W - 1);
     const x1 = clamp(x0 + 1, 0, WORK_W - 1);
@@ -320,8 +490,8 @@ export async function buildModel(
     op[o + 3] = 255;
   };
   for (let x = 0; x < W_T; x++) {
-    const a = x / SLICE_W; // índice contínuo de fatia
-    const c0 = Math.round(a - 0.5); // centro de quadro mais próximo
+    const a = x / SLICE_W;
+    const c0 = Math.round(a - 0.5);
     const d0 = a - (c0 + 0.5);
     const k0 = mod(c0, N);
     const s = d0 >= 0 ? 1 : -1;
@@ -345,7 +515,7 @@ export async function buildModel(
     }
   }
   tctx.putImageData(out, 0, 0);
-  report(2, 1, `textura costurada ${W_T}×${WORK_H} px · blend de ${N} vistas`);
+  report(2, 1, `quebra-cabeça montado · ${N} vistas alinhadas → faixa 360° de ${W_T}×${WORK_H} px`);
   await tick();
 
   const lumAt = (u: number, vTex: number) => {
@@ -358,22 +528,23 @@ export async function buildModel(
     let r = 0;
     let g = 0;
     let b = 0;
-    let n = 0;
+    let n2 = 0;
     const y = clamp(Math.round(vTex * (WORK_H - 1)), 4, WORK_H - 5);
     for (let dx = 0; dx < 6; dx++) {
-      for (let x = Math.floor(W_T * (0.15 + 0.14 * dx)); x < Math.floor(W_T * (0.15 + 0.14 * dx)) + 8; x++) {
+      const x0 = Math.floor(W_T * (0.15 + 0.14 * dx));
+      for (let x = x0; x < x0 + 8; x++) {
         const i = (y * W_T + mod(x, W_T)) * 4;
         r += op[i];
         g += op[i + 1];
         b += op[i + 2];
-        n++;
+        n2++;
       }
     }
     const toHex = (v: number) => Math.round(clamp(v, 0, 255)).toString(16).padStart(2, "0");
-    return `#${toHex(r / n)}${toHex(g / n)}${toHex(b / n)}`;
+    return `#${toHex(r / n2)}${toHex(g / n2)}${toHex(b / n2)}`;
   };
 
-  /* ---- passo 3 · nuvem de pontos sobre o hull ---- */
+  /* ---- passo 3 · nuvem de pontos sobre o volume ---- */
   const P_A = 150;
   const P_R = 104;
   const pPos = new Float32Array(P_A * P_R * 3);
@@ -390,7 +561,10 @@ export async function buildModel(
     const r10 = grid[mod(j1, ANGLES) * ROWS + i0];
     const r01 = grid[mod(j0, ANGLES) * ROWS + i1];
     const r11 = grid[mod(j1, ANGLES) * ROWS + i1];
-    return clamp((r00 * (1 - fj) + r10 * fj) * (1 - fi) + (r01 * (1 - fj) + r11 * fj) * fi, R_MIN, R_MAX * 1.2) * gScale;
+    return (
+      clamp((r00 * (1 - fj) + r10 * fj) * (1 - fi) + (r01 * (1 - fj) + r11 * fj) * fi, R_MIN, R_MAX * 1.2) *
+      gScale
+    );
   };
   for (let a = 0; a < P_A; a++) {
     for (let i = 0; i < P_R; i++) {
@@ -415,7 +589,7 @@ export async function buildModel(
     }
     if (a % 40 === 0) report(3, a / P_A);
   }
-  report(3, 1, `${pCount.toLocaleString("pt-BR")} pontos projetados na superfície do hull`);
+  report(3, 1, `${pCount.toLocaleString("pt-BR")} pontos projetados na superfície reconstruída`);
   await tick();
 
   /* ---- passo 4 · malha texturizada + relevo ---- */
@@ -439,7 +613,7 @@ export async function buildModel(
       const vTex = vTopG + vObj * (vBotG - vTopG);
       const r = radius(j, i);
       const l = lumAt(u, vTex);
-      const rr = r + (0.5 - l) * 2 * RELIEF_DEFAULT;
+      const rr = r + clamp((0.5 - l) * 2 * RELIEF_DEFAULT, -0.045, 0.045);
       const k = j * ROWS + i;
       pos[k * 3] = dirX[j] * rr;
       pos[k * 3 + 1] = (0.5 - vObj) * MODEL_H;
@@ -453,7 +627,7 @@ export async function buildModel(
   report(4, 0.4);
   await tick();
 
-  // tampas (leque até o eixo) usando os anéis do hull
+  // tampas (leque até o eixo) usando os anéis do volume
   const capVerts: number[] = [];
   const capUv: number[] = [];
   const capIdx: number[] = [];
@@ -528,7 +702,7 @@ export function applyRelief(model: ModelData, amount: number) {
   const { count, baseR, lum, dirX, dirZ } = model.relief;
   for (let k = 0; k < count; k++) {
     const col = k % dirX.length;
-    const rr = baseR[k] + (0.5 - lum[k]) * 2 * amount;
+    const rr = baseR[k] + clamp((0.5 - lum[k]) * 2 * amount, -0.05, 0.05);
     pos.setXYZ(k, dirX[col] * rr, pos.getY(k), dirZ[col] * rr);
   }
   pos.needsUpdate = true;

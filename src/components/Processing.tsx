@@ -5,8 +5,8 @@ import { IconCheck } from "./Icons";
 
 const STEPS = [
   { label: "Equalização de exposição", desc: "normaliza o brilho entre os quadros" },
-  { label: "Silhuetas · visual hull", desc: "recorta o objeto do fundo em cada vista" },
-  { label: "Costura da textura 360°", desc: "une as vistas numa faixa contínua" },
+  { label: "Reconhecimento do objeto", desc: "isola a peça · remove fundo e interferências" },
+  { label: "Quebra-cabeça 360°", desc: "alinha e costura as vistas numa faixa contínua" },
   { label: "Nuvem de pontos", desc: "projeta amostras coloridas na superfície" },
   { label: "Malha + relevo", desc: "esculpe a forma e o micro-relevo" },
 ];
@@ -20,6 +20,7 @@ interface Props {
 export default function Processing({ frames, onDone, onError }: Props) {
   const [step, setStep] = useState(0);
   const [p, setP] = useState(0);
+  const [preview, setPreview] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([
     `» ${frames.length} quadros · 384×512 · pipeline iniciado`,
   ]);
@@ -30,10 +31,11 @@ export default function Processing({ frames, onDone, onError }: Props) {
     let cancelled = false;
     (async () => {
       try {
-        const model = await buildModel(frames, ({ step: s, p: pct, log }) => {
+        const model = await buildModel(frames, ({ step: s, p: pct, log, preview: pv }) => {
           if (cancelled) return;
           setStep(s);
           setP(Math.round(pct));
+          if (pv) setPreview(pv);
           if (log) setLogs((l) => [...l.slice(-8), `» ${log}`]);
         });
         if (cancelled) return;
@@ -134,14 +136,36 @@ export default function Processing({ frames, onDone, onError }: Props) {
           })}
         </ol>
 
-        {/* console */}
-        <div ref={logRef} className="mt-4 h-24 overflow-y-auto rounded-md border border-line bg-panel p-3 font-mono text-[11px] leading-relaxed">
-          {logs.map((l, i) => (
-            <p key={i} className={i === logs.length - 1 ? "text-scan" : "text-muted"}>
-              {l}
-            </p>
-          ))}
-          <span className="anim-caret text-accent">▮</span>
+        {/* máscara reconhecida + console */}
+        <div className="mt-4 flex items-stretch gap-3">
+          <div
+            className={`flex w-24 shrink-0 flex-col items-center justify-between overflow-hidden rounded-md border transition-colors duration-500 ${
+              preview ? "border-scan/50 bg-panel" : "border-line bg-panel opacity-40"
+            }`}
+          >
+            {preview ? (
+              <>
+                <img src={preview} alt="Objeto reconhecido no quadro 1" className="anim-pop h-[104px] w-full object-cover" />
+                <span className="w-full bg-deep/80 py-1 text-center font-mono text-[8px] tracking-[0.18em] text-scan">
+                  OBJETO ISOLADO
+                </span>
+              </>
+            ) : (
+              <span className="px-2 py-3 text-center font-mono text-[8px] tracking-[0.18em] text-dim">
+                AGUARDANDO
+                <br />
+                RECONHECIMENTO
+              </span>
+            )}
+          </div>
+          <div ref={logRef} className="h-28 min-w-0 flex-1 overflow-y-auto rounded-md border border-line bg-panel p-3 font-mono text-[11px] leading-relaxed">
+            {logs.map((l, i) => (
+              <p key={i} className={i === logs.length - 1 ? "text-scan" : "text-muted"}>
+                {l}
+              </p>
+            ))}
+            <span className="anim-caret text-accent">▮</span>
+          </div>
         </div>
       </div>
     </div>

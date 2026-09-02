@@ -56,6 +56,7 @@ export interface ProgressInfo {
   step: number; // índice do passo atual
   p: number; // 0..100 global
   log?: string;
+  preview?: string; // dataURL da máscara de segmentação (prova visual)
 }
 
 export type Stage = "scan" | "processing" | "view";
