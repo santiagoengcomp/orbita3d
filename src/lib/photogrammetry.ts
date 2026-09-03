@@ -1,6 +1,9 @@
 import type { PhotogrammetryModelData, ProgressInfo, ScanFrame, ScanSubject } from "./types";
 
-const API_ROOT = (import.meta.env.VITE_RECONSTRUCTION_API as string | undefined)?.replace(/\/$/, "") || "/api";
+const QUICK_TUNNEL_API = "https://garcia-moment-bras-cameras.trycloudflare.com/api";
+const API_ROOT =
+  (import.meta.env.VITE_RECONSTRUCTION_API as string | undefined)?.replace(/\/$/, "") ||
+  (import.meta.env.PROD ? QUICK_TUNNEL_API : "/api");
 
 interface HealthResponse {
   ok: boolean;

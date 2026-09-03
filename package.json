@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "vite",
     "dev:full": "powershell -ExecutionPolicy Bypass -File ./start-orbita.ps1",
+    "tunnel": "powershell -ExecutionPolicy Bypass -File ./start-public-tunnel.ps1",
     "build": "vite build",
     "typecheck": "tsc --noEmit"
   },
