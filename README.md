@@ -5,8 +5,8 @@ tem dois modos:
 
 - **Fotogrametria real**: COLMAP calcula as posições das câmeras e o OpenMVS
   gera profundidade, nuvem densa, malha e textura. O resultado é um `.GLB` real.
-- **Prévia rápida**: mantém o pipeline v3 de visual hull no navegador para
-  demonstração e para máquinas onde o motor local não está iniciado.
+- **Demonstração**: usa uma geometria sintética conhecida apenas para mostrar o
+  visualizador. Fotos do usuário nunca usam esse atalho.
 
 A captura possui perfis guiados de 24 vistas para **objetos**, **rostos** e
 **corpos inteiros**. Antes da fotogrametria, um modelo de reconhecimento remove
@@ -74,7 +74,8 @@ COLMAP e OpenMVS não rodam nas funções da Vercel. Para disponibilizar a
 fotogrametria real pela internet, hospede a pasta `server/` e os motores em uma
 máquina própria ou serviço com processamento persistente e configure no projeto
 da Vercel a variável `VITE_RECONSTRUCTION_API` com a URL HTTPS terminada em
-`/api`. Sem essa variável, o deploy continua funcional no modo **Prévia rápida**.
+`/api`. Sem essa variável, o deploy abre a interface e a demonstração, mas não
+aceita reconstrução real de fotos.
 
 As melhorias planejadas para a próxima rodada estão em
 [`PROXIMAS_MELHORIAS.md`](PROXIMAS_MELHORIAS.md).

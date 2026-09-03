@@ -414,7 +414,14 @@ export async function buildModel(
   let maskUrl: string | null = null;
   for (let i = 0; i < N; i++) {
     const seg = segmentObject(frames[i].canvas);
-    profiles.push(seg.profile);
+    const known = frames[i].syntheticProfile;
+    profiles.push(known ? {
+      hw: Float32Array.from(known.halfWidths),
+      vTop: known.top,
+      vBot: known.bottom,
+      ok: true,
+      area: 0.32,
+    } : seg.profile);
     if (i === 0 && seg.maskUrl) {
       maskUrl = seg.maskUrl;
       report(1, 1 / N, undefined, maskUrl);

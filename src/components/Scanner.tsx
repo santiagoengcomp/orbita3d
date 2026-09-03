@@ -33,7 +33,7 @@ export default function Scanner({ onReady, onDemo, demoBusy }: Props) {
   const [sweepKey, setSweepKey] = useState(-1);
   const [tipIdx, setTipIdx] = useState(0);
   const [res, setRes] = useState("");
-  const [mode, setMode] = useState<ReconstructionMode>("local");
+  const [mode, setMode] = useState<ReconstructionMode>("photogrammetry");
   const [subject, setSubject] = useState<ScanSubject>("object");
   const [engineOnline, setEngineOnline] = useState(false);
   const [capturing, setCapturing] = useState(false);
@@ -346,14 +346,7 @@ export default function Scanner({ onReady, onDemo, demoBusy }: Props) {
             >
               Fotogrametria real
             </button>
-            <button
-              type="button"
-              disabled={subject !== "object"}
-              onClick={() => setMode("local")}
-              className={`press rounded px-3 py-1.5 text-[11px] font-semibold ${mode === "local" ? "bg-accent text-deep" : "text-muted"} disabled:opacity-35`}
-            >
-              Prévia rápida
-            </button>
+            <span className="px-3 py-1.5 text-[10px] font-semibold text-muted">FOTOS REAIS · SEM HULL</span>
           </div>
           <span className={`font-mono text-[9px] tracking-wide ${engineOnline ? "text-scan" : "text-accent"}`}>
             {engineOnline ? "MOTOR 3D PRONTO" : "INICIE server/start.ps1"}

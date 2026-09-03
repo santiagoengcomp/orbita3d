@@ -163,7 +163,15 @@ export function makeDemoFrames(count = 12): ScanFrame[] {
     g.ellipse(cx, yTop + 3, profR(1) - 9, 6.5, 0, 0, Math.PI * 2);
     g.fill();
 
-    frames.push({ canvas: c, url: c.toDataURL("image/jpeg", 0.74) });
+    frames.push({
+      canvas: c,
+      url: c.toDataURL("image/jpeg", 0.74),
+      syntheticProfile: {
+        halfWidths: Array.from({ length: 72 }, (_, i) => profR(1 - i / 71) / (WORK_W / 2)),
+        top: yTop / (WORK_H - 1),
+        bottom: yBot / (WORK_H - 1),
+      },
+    });
   }
   return frames;
 }

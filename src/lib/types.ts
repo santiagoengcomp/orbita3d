@@ -13,6 +13,8 @@ export interface ScanFrame {
   elevationDeg?: number;
   poseId?: string;
   subject?: ScanSubject;
+  /** Perfil conhecido usado somente pelo objeto sintetico de demonstracao. */
+  syntheticProfile?: { halfWidths: number[]; top: number; bottom: number };
   quality?: {
     sharpness: number;
     exposure: number;
