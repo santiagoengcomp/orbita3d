@@ -1,6 +1,10 @@
 node_modules
 dist
 .tools
+server/.venv/
+server/workspaces/
+__pycache__/
+*.py[cod]
 *.zip
 *.tar.gz
 *.7z

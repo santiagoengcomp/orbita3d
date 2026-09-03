@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:full": "powershell -ExecutionPolicy Bypass -File ./start-orbita.ps1",
     "build": "vite build",
     "typecheck": "tsc --noEmit"
   },

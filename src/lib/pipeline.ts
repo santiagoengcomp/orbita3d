@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { ModelData, ProgressInfo, ScanFrame } from "./types";
+import type { LocalModelData, ProgressInfo, ScanFrame } from "./types";
 
 /* ================= constantes ================= */
 export const WORK_W = 384;
@@ -23,7 +23,7 @@ const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
 const mod = (v: number, n: number) => ((v % n) + n) % n;
 
 /* ================= captura ================= */
-export function captureFromVideo(video: HTMLVideoElement): ScanFrame {
+export async function captureFromVideo(video: HTMLVideoElement, angleDeg = 0): Promise<ScanFrame> {
   const canvas = document.createElement("canvas");
   canvas.width = WORK_W;
   canvas.height = WORK_H;
@@ -34,7 +34,59 @@ export function captureFromVideo(video: HTMLVideoElement): ScanFrame {
   const dw = vw * scale;
   const dh = vh * scale;
   ctx.drawImage(video, (WORK_W - dw) / 2, (WORK_H - dh) / 2, dw, dh);
-  return { canvas, url: canvas.toDataURL("image/jpeg", 0.72) };
+  // Mantém uma cópia maior e menos comprimida para SIFT/MVS. A prévia local
+  // continua pequena para não deixar a interface pesada.
+  const maxSide = 1920;
+  const photoScale = Math.min(1, maxSide / Math.max(vw, vh));
+  const photo = document.createElement("canvas");
+  photo.width = Math.max(1, Math.round(vw * photoScale));
+  photo.height = Math.max(1, Math.round(vh * photoScale));
+  const photoCtx = photo.getContext("2d")!;
+  photoCtx.drawImage(video, 0, 0, photo.width, photo.height);
+
+  const sample = document.createElement("canvas");
+  sample.width = 96;
+  sample.height = 96;
+  const sampleCtx = sample.getContext("2d", { willReadFrequently: true })!;
+  sampleCtx.drawImage(canvas, 0, 0, sample.width, sample.height);
+  const pixels = sampleCtx.getImageData(0, 0, sample.width, sample.height).data;
+  let lumaSum = 0;
+  let lapSum = 0;
+  let lapSqSum = 0;
+  let lapCount = 0;
+  const lum = new Float32Array(sample.width * sample.height);
+  for (let i = 0, p = 0; i < pixels.length; i += 4, p++) {
+    lum[p] = 0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2];
+    lumaSum += lum[p];
+  }
+  for (let y = 1; y < sample.height - 1; y++) {
+    for (let x = 1; x < sample.width - 1; x++) {
+      const p = y * sample.width + x;
+      const lap = 4 * lum[p] - lum[p - 1] - lum[p + 1] - lum[p - sample.width] - lum[p + sample.width];
+      lapSum += lap;
+      lapSqSum += lap * lap;
+      lapCount++;
+    }
+  }
+  const exposure = lumaSum / lum.length;
+  const sharpness = Math.max(0, lapSqSum / lapCount - (lapSum / lapCount) ** 2);
+  const blob = await new Promise<Blob>((resolve, reject) =>
+    photo.toBlob((value) => (value ? resolve(value) : reject(new Error("Falha ao codificar a foto"))), "image/jpeg", 0.92)
+  );
+  return {
+    canvas,
+    url: canvas.toDataURL("image/jpeg", 0.78),
+    blob,
+    width: photo.width,
+    height: photo.height,
+    capturedAt: Date.now(),
+    angleDeg,
+    quality: {
+      sharpness,
+      exposure,
+      acceptable: sharpness >= 18 && exposure >= 35 && exposure <= 225,
+    },
+  };
 }
 
 export function downscale(src: HTMLCanvasElement, w: number, h: number, q = 0.72): string {
@@ -124,7 +176,8 @@ function segmentObject(src: HTMLCanvasElement): { profile: Profile; maskUrl: str
     const reached = new Uint8Array(N);
     const stack = new Int32Array(N);
     let sp = 0;
-    const st2 = tol * 1.15 * (tol * 1.15);
+    const st2 = tol * 1.55 * (tol * 1.55);
+    const growGlobal2 = tol * 1.85 * (tol * 1.85);
     const t2 = tol * tol;
     const seed = (p: number) => {
       const i = p * 4;
@@ -158,7 +211,10 @@ function segmentObject(src: HTMLCanvasElement): { profile: Profile; maskUrl: str
         const dr = d[j] - cr;
         const dg = d[j + 1] - cg;
         const db = d[j + 2] - cb;
-        if (dr * dr + dg * dg + db * db < t2) {
+        const gr = d[j] - mR;
+        const gg = d[j + 1] - mG;
+        const gb = d[j + 2] - mB;
+        if (dr * dr + dg * dg + db * db < t2 && gr * gr + gg * gg + gb * gb < growGlobal2) {
           reached[q] = 1;
           stack[sp++] = q;
         }
@@ -326,7 +382,7 @@ function segmentObject(src: HTMLCanvasElement): { profile: Profile; maskUrl: str
 export async function buildModel(
   frames: ScanFrame[],
   onProgress: (info: ProgressInfo) => void
-): Promise<ModelData> {
+): Promise<LocalModelData> {
   const N = frames.length;
   const base = [0, 6, 32, 62, 82];
   const span = [6, 26, 30, 20, 18];
@@ -681,6 +737,7 @@ export async function buildModel(
   );
 
   return {
+    kind: "local",
     texture: texCanvas,
     geometry,
     points: { positions: pPos, colors: pCol, count: pCount },
@@ -698,7 +755,7 @@ export async function buildModel(
 }
 
 /* ================= relevo ao vivo ================= */
-export function applyRelief(model: ModelData, amount: number) {
+export function applyRelief(model: LocalModelData, amount: number) {
   const pos = model.geometry.getAttribute("position") as THREE.BufferAttribute;
   const { count, baseR, lum, dirX, dirZ } = model.relief;
   for (let k = 0; k < count; k++) {

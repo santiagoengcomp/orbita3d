@@ -2,8 +2,9 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFExporter } from "three/addons/exporters/GLTFExporter.js";
-import type { ModelData, ScanMeta, ViewMode } from "../lib/types";
+import type { LocalModelData, ModelData, ScanMeta, ViewMode } from "../lib/types";
 import { applyRelief, MODEL_H, RELIEF_DEFAULT, RELIEF_MAX } from "../lib/pipeline";
+import PhotogrammetryViewer from "./PhotogrammetryViewer";
 import {
   IconBack,
   IconCube,
@@ -24,7 +25,16 @@ interface Props {
   onDelete?: () => void;
 }
 
-export default function Viewer({ model, meta, onNewScan, onDelete }: Props) {
+export default function Viewer(props: Props) {
+  if (props.model.kind === "photogrammetry") return <PhotogrammetryViewer {...props} model={props.model} />;
+  return <LocalViewer {...props} model={props.model} />;
+}
+
+interface LocalProps extends Omit<Props, "model"> {
+  model: LocalModelData;
+}
+
+function LocalViewer({ model, meta, onNewScan, onDelete }: LocalProps) {
   const mountRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);

@@ -4,10 +4,25 @@ import type * as THREE from "three";
 export interface ScanFrame {
   canvas: HTMLCanvasElement;
   url: string; // dataURL p/ exibição na interface
+  /** Foto JPEG em resolução maior, usada pela reconstrução fotogramétrica. */
+  blob?: Blob;
+  width?: number;
+  height?: number;
+  capturedAt?: number;
+  angleDeg?: number;
+  elevationDeg?: number;
+  poseId?: string;
+  subject?: ScanSubject;
+  quality?: {
+    sharpness: number;
+    exposure: number;
+    acceptable: boolean;
+  };
 }
 
 /** Dados do modelo reconstruído, prontos p/ o visualizador. */
-export interface ModelData {
+export interface LocalModelData {
+  kind: "local";
   texture: HTMLCanvasElement;
   geometry: THREE.BufferGeometry;
   points: {
@@ -33,12 +48,32 @@ export interface ModelData {
   };
 }
 
+/** Modelo real gerado pelo COLMAP + OpenMVS. */
+export interface PhotogrammetryModelData {
+  kind: "photogrammetry";
+  glb: string;
+  jobId: string;
+  stats: {
+    frames: number;
+    registeredFrames: number;
+    vertices: number;
+    triangles: number;
+    points: number;
+  };
+}
+
+export type ModelData = LocalModelData | PhotogrammetryModelData;
+export type ReconstructionMode = "photogrammetry" | "local";
+export type ScanSubject = "object" | "face" | "body";
+
 export interface ScanMeta {
   id: string;
   name: string;
   createdAt: number;
   frameCount: number;
   demo?: boolean;
+  mode?: ReconstructionMode;
+  subject?: ScanSubject;
 }
 
 /** Registro persistido na galeria (localStorage). */

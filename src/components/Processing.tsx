@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import type { ModelData, ScanFrame } from "../lib/types";
+import type { ModelData, ProgressInfo, ReconstructionMode, ScanFrame, ScanSubject } from "../lib/types";
 import { buildModel } from "../lib/pipeline";
+import { buildPhotogrammetry } from "../lib/photogrammetry";
 import { IconCheck } from "./Icons";
 
 const STEPS = [
@@ -11,33 +12,50 @@ const STEPS = [
   { label: "Malha + relevo", desc: "esculpe a forma e o micro-relevo" },
 ];
 
+const REAL_STEPS = [
+  { label: "Leitura das fotos", desc: "preserva resolução e detalhes para os pontos" },
+  { label: "Poses das câmeras", desc: "COLMAP encontra correspondências e posições" },
+  { label: "Mapa de profundidade", desc: "OpenMVS mede a superfície em várias vistas" },
+  { label: "Malha 3D", desc: "conecta a nuvem densa numa superfície" },
+  { label: "Textura fotográfica", desc: "projeta as fotos e exporta o arquivo GLB" },
+];
+
 interface Props {
   frames: ScanFrame[];
+  mode: ReconstructionMode;
+  subject: ScanSubject;
   onDone: (model: ModelData) => void;
-  onError: () => void;
+  onError: (message?: string) => void;
 }
 
-export default function Processing({ frames, onDone, onError }: Props) {
+export default function Processing({ frames, mode, subject, onDone, onError }: Props) {
+  const steps = mode === "photogrammetry" ? REAL_STEPS : STEPS;
   const [step, setStep] = useState(0);
   const [p, setP] = useState(0);
   const [preview, setPreview] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([
-    `» pipeline v3 (visual hull) · ${frames.length} quadros · 384×512`,
+    mode === "photogrammetry"
+      ? `» fotogrametria real · ${frames.length} fotos · COLMAP + OpenMVS`
+      : `» pipeline v3 (visual hull) · ${frames.length} quadros · 384×512`,
   ]);
   const logRef = useRef<HTMLDivElement>(null);
   const doneRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
     (async () => {
       try {
-        const model = await buildModel(frames, ({ step: s, p: pct, log, preview: pv }) => {
+        const progress = ({ step: s, p: pct, log, preview: pv }: ProgressInfo) => {
           if (cancelled) return;
           setStep(s);
           setP(Math.round(pct));
           if (pv) setPreview(pv);
           if (log) setLogs((l) => [...l.slice(-8), `» ${log}`]);
-        });
+        };
+        const model = mode === "photogrammetry"
+          ? await buildPhotogrammetry(frames, subject, progress, controller.signal)
+          : await buildModel(frames, progress);
         if (cancelled) return;
         doneRef.current = true;
         setP(100);
@@ -45,13 +63,14 @@ export default function Processing({ frames, onDone, onError }: Props) {
         setTimeout(() => onDone(model), 650);
       } catch (err) {
         console.error(err);
-        if (!cancelled) onError();
+        if (!cancelled) onError(err instanceof Error ? err.message.split("\n")[0] : undefined);
       }
     })();
     return () => {
       cancelled = true;
+      controller.abort();
     };
-  }, [frames, onDone, onError]);
+  }, [frames, mode, subject, onDone, onError]);
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: "smooth" });
@@ -107,7 +126,7 @@ export default function Processing({ frames, onDone, onError }: Props) {
 
         {/* etapas */}
         <ol className="mt-5 space-y-2">
-          {STEPS.map((s, i) => {
+          {steps.map((s, i) => {
             const st = i < step || doneRef.current ? "done" : i === step ? "run" : "wait";
             return (
               <li

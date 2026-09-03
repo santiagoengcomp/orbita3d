@@ -1,21 +1,23 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ScanFrame } from "../lib/types";
+import type { ReconstructionMode, ScanFrame, ScanSubject } from "../lib/types";
 import { captureFromVideo, MAX_FRAMES, MIN_FRAMES, TARGET_FRAMES } from "../lib/pipeline";
+import { reconstructionHealth } from "../lib/photogrammetry";
+import { CAPTURE_PROFILES, SUBJECTS } from "../lib/captureProfiles";
 import { IconAlert, IconLayers, IconOrbit, IconShutter, IconTrash, IconX } from "./Icons";
 
 type CamState = "starting" | "live" | "error";
 
 const TIPS = [
-  "O fundo é removido automaticamente — o app isola só o objeto.",
-  "Mantenha a mesma distância ao orbitar o objeto.",
-  "Luz difusa e uniforme revela mais relevo na malha.",
-  "Gire devagar: 30° entre cada captura é o ideal.",
+  "Deixe o objeto imóvel e caminhe com a câmera ao redor dele.",
+  "Faça cada foto repetir cerca de 70% da imagem anterior.",
+  "Luz difusa e uniforme preserva detalhes para a malha.",
+  "Complete uma volta e faça algumas fotos um pouco mais altas.",
   "Centralize o objeto e enquadre ele por inteiro.",
-  "Evite reflexos fortes e objetos encostados na peça.",
+  "Evite objetos transparentes, brilhantes ou sem textura.",
 ];
 
 interface Props {
-  onReady: (frames: ScanFrame[]) => void;
+  onReady: (frames: ScanFrame[], mode: ReconstructionMode, subject: ScanSubject) => void;
   onDemo: () => void;
   demoBusy: boolean;
 }
@@ -31,6 +33,11 @@ export default function Scanner({ onReady, onDemo, demoBusy }: Props) {
   const [sweepKey, setSweepKey] = useState(-1);
   const [tipIdx, setTipIdx] = useState(0);
   const [res, setRes] = useState("");
+  const [mode, setMode] = useState<ReconstructionMode>("local");
+  const [subject, setSubject] = useState<ScanSubject>("object");
+  const [engineOnline, setEngineOnline] = useState(false);
+  const [capturing, setCapturing] = useState(false);
+  const capturingRef = useRef(false);
   const framesRef = useRef<ScanFrame[]>([]);
   framesRef.current = frames;
   const insecure = typeof window !== "undefined" && !window.isSecureContext;
@@ -44,8 +51,8 @@ export default function Scanner({ onReady, onDemo, demoBusy }: Props) {
         audio: false,
         video: {
           facingMode: { ideal: "environment" },
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
         },
       });
       streamRef.current = stream;
@@ -53,7 +60,7 @@ export default function Scanner({ onReady, onDemo, demoBusy }: Props) {
       if (v) {
         v.srcObject = stream;
         await v.play().catch(() => {});
-        setRes(`${v.videoWidth || 1280}×${v.videoHeight || 720}`);
+        setRes(`${v.videoWidth || 1920}×${v.videoHeight || 1080}`);
       }
       setCam("live");
     } catch (e) {
@@ -80,21 +87,43 @@ export default function Scanner({ onReady, onDemo, demoBusy }: Props) {
   }, [start]);
 
   useEffect(() => {
+    const controller = new AbortController();
+    reconstructionHealth(controller.signal)
+      .then((health) => {
+        setEngineOnline(health.ok);
+        if (health.ok) setMode("photogrammetry");
+      })
+      .catch(() => setEngineOnline(false));
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
     const t = window.setInterval(() => setTipIdx((i) => i + 1), 4200);
     return () => window.clearInterval(t);
   }, []);
 
   /* ---------------- captura ---------------- */
-  const capture = useCallback(() => {
+  const capture = useCallback(async () => {
     const v = videoRef.current;
-    if (!v || cam !== "live") return;
+    if (!v || cam !== "live" || capturingRef.current) return;
     if (framesRef.current.length >= MAX_FRAMES) return;
-    const frame = captureFromVideo(v);
-    setFrames((f) => (f.length >= MAX_FRAMES ? f : [...f, frame]));
-    setFlashKey((k) => k + 1);
-    setSweepKey((k) => k + 1);
-    if ("vibrate" in navigator) navigator.vibrate?.(28);
-  }, [cam]);
+    capturingRef.current = true;
+    setCapturing(true);
+    try {
+      const pose = CAPTURE_PROFILES[subject][framesRef.current.length];
+      const frame = await captureFromVideo(v, pose?.yaw ?? (framesRef.current.length / 24) * 360);
+      frame.elevationDeg = pose?.elevation ?? 0;
+      frame.poseId = pose?.id;
+      frame.subject = subject;
+      setFrames((f) => (f.length >= MAX_FRAMES ? f : [...f, frame]));
+      setFlashKey((k) => k + 1);
+      setSweepKey((k) => k + 1);
+      if ("vibrate" in navigator) navigator.vibrate?.(28);
+    } finally {
+      capturingRef.current = false;
+      setCapturing(false);
+    }
+  }, [cam, subject]);
 
   const burstStart = useCallback(() => {
     if (cam !== "live") return;
@@ -118,11 +147,20 @@ export default function Scanner({ onReady, onDemo, demoBusy }: Props) {
 
   const removeFrame = (i: number) => setFrames((f) => f.filter((_, j) => j !== i));
 
-  const canProcess = frames.length >= MIN_FRAMES;
+  const targetFrames = mode === "photogrammetry" ? 24 : TARGET_FRAMES;
+  const minFrames = mode === "photogrammetry" ? 24 : MIN_FRAMES;
+  const canProcess = frames.length >= minFrames && (mode === "local" || engineOnline);
+  const currentPose = CAPTURE_PROFILES[subject][Math.min(frames.length, 23)];
+
+  const chooseSubject = (next: ScanSubject) => {
+    setSubject(next);
+    setFrames([]);
+    if (next !== "object") setMode("photogrammetry");
+  };
 
   /* ---------------- anel orbital do obturador ---------------- */
-  const ringTicks = Array.from({ length: TARGET_FRAMES }, (_, i) => {
-    const a = (i / TARGET_FRAMES) * Math.PI * 2 - Math.PI / 2;
+  const ringTicks = Array.from({ length: targetFrames }, (_, i) => {
+    const a = (i / targetFrames) * Math.PI * 2 - Math.PI / 2;
     const r1 = 40,
       r2 = 46;
     return {
@@ -167,7 +205,7 @@ export default function Scanner({ onReady, onDemo, demoBusy }: Props) {
             <span>{res || "———"}</span>
             <span className="hidden text-scan sm:inline">3:4 · 384×512</span>
             <span className="rounded-sm border border-scan/40 px-1.5 py-0.5 text-[9px] tracking-[0.1em] text-scan">
-              v3·HULL
+              {mode === "photogrammetry" ? "FOTO·REAL" : "v3·HULL"}
             </span>
           </div>
         </div>
@@ -193,12 +231,32 @@ export default function Scanner({ onReady, onDemo, demoBusy }: Props) {
           <path d="M80 20v10M80 130v10M20 80h10M130 80h10" strokeWidth="1" opacity="0.6" />
         </svg>
 
+        {cam === "live" && frames.length < targetFrames && (
+          <div className="pointer-events-none absolute left-1/2 top-14 z-20 w-[min(92%,28rem)] -translate-x-1/2 rounded-lg border border-accent/70 bg-deep/90 px-4 py-3 text-center shadow-2xl backdrop-blur">
+            <p className="font-mono text-[10px] tracking-[0.2em] text-accent">
+              FOTO {String(frames.length + 1).padStart(2, "0")}/{targetFrames}
+            </p>
+            <p className="mt-1 font-display text-lg font-black uppercase text-ink">{currentPose.label}</p>
+            <p className="mt-1 text-xs text-muted">{currentPose.instruction}</p>
+          </div>
+        )}
+
+        <div className="pointer-events-none absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 opacity-70">
+          {subject === "object" ? (
+            <div className="h-48 w-36 rounded-[42%_42%_26%_26%] border-2 border-dashed border-scan" />
+          ) : subject === "face" ? (
+            <div className="h-48 w-36 rounded-[48%] border-2 border-dashed border-scan" />
+          ) : (
+            <div className="h-72 w-28 rounded-[45%_45%_28%_28%] border-2 border-dashed border-scan" />
+          )}
+        </div>
+
         {/* contador gigante */}
         <div className="pointer-events-none absolute right-4 top-1/2 z-10 hidden -translate-y-1/2 text-right sm:block">
           <div className="font-display text-6xl font-black leading-none tabular-nums text-ink/90">
             {String(frames.length).padStart(2, "0")}
           </div>
-          <div className="mt-1 font-mono text-[10px] tracking-[0.3em] text-muted">/ {TARGET_FRAMES} QUADROS</div>
+          <div className="mt-1 font-mono text-[10px] tracking-[0.3em] text-muted">/ {targetFrames} QUADROS</div>
         </div>
 
         {/* dica rotativa */}
@@ -265,6 +323,42 @@ export default function Scanner({ onReady, onDemo, demoBusy }: Props) {
 
       {/* ---------- controles ---------- */}
       <div className="shrink-0 border-t border-line bg-panel/80 px-4 py-4 backdrop-blur">
+        <div className="mx-auto mb-2 grid max-w-2xl grid-cols-3 gap-1 rounded-md border border-line bg-deep/70 p-1">
+          {(Object.keys(SUBJECTS) as ScanSubject[]).map((item) => (
+            <button
+              key={item}
+              type="button"
+              onClick={() => chooseSubject(item)}
+              className={`press rounded px-2 py-2 text-[11px] font-bold ${subject === item ? "bg-accent text-deep" : "text-muted"}`}
+            >
+              {SUBJECTS[item].label}
+            </button>
+          ))}
+        </div>
+        <p className="mx-auto mb-2 max-w-2xl text-center font-mono text-[9px] text-muted">{SUBJECTS[subject].hint}</p>
+        <div className="mx-auto mb-3 flex max-w-2xl items-center justify-between gap-3 rounded-md border border-line bg-deep/70 p-1.5">
+          <div className="flex gap-1">
+            <button
+              type="button"
+              disabled={!engineOnline}
+              onClick={() => setMode("photogrammetry")}
+              className={`press rounded px-3 py-1.5 text-[11px] font-semibold ${mode === "photogrammetry" ? "bg-scan text-deep" : "text-muted"} disabled:opacity-35`}
+            >
+              Fotogrametria real
+            </button>
+            <button
+              type="button"
+              disabled={subject !== "object"}
+              onClick={() => setMode("local")}
+              className={`press rounded px-3 py-1.5 text-[11px] font-semibold ${mode === "local" ? "bg-accent text-deep" : "text-muted"} disabled:opacity-35`}
+            >
+              Prévia rápida
+            </button>
+          </div>
+          <span className={`font-mono text-[9px] tracking-wide ${engineOnline ? "text-scan" : "text-accent"}`}>
+            {engineOnline ? "MOTOR 3D PRONTO" : "INICIE server/start.ps1"}
+          </span>
+        </div>
         <div className="mx-auto flex max-w-2xl items-center justify-between gap-3">
           {/* lixeira + contagem */}
           <div className="flex w-28 flex-col items-start gap-1.5">
@@ -277,7 +371,7 @@ export default function Scanner({ onReady, onDemo, demoBusy }: Props) {
               LIMPAR
             </button>
             <span className="font-mono text-[10px] tracking-[0.18em] text-dim sm:hidden">
-              {frames.length}/{TARGET_FRAMES}
+              {frames.length}/{targetFrames}
             </span>
           </div>
 
@@ -294,17 +388,14 @@ export default function Scanner({ onReady, onDemo, demoBusy }: Props) {
                   stroke={t.done ? "#3FE0C5" : t.next ? "#FF7A1F" : "#2e3a48"}
                   strokeWidth={t.next ? 3 : 2}
                   strokeLinecap="round"
-                  className={t.next && frames.length < TARGET_FRAMES ? "anim-tick" : ""}
+                  className={t.next && frames.length < targetFrames ? "anim-tick" : ""}
                 />
               ))}
             </svg>
             <button
-              onPointerDown={burstStart}
-              onPointerUp={burstStop}
-              onPointerLeave={burstStop}
-              onPointerCancel={burstStop}
-              disabled={cam !== "live" || frames.length >= MAX_FRAMES}
-              aria-label="Capturar quadros (segure para rajada)"
+              onClick={capture}
+              disabled={cam !== "live" || capturing || frames.length >= MAX_FRAMES}
+              aria-label={`Capturar ${currentPose.label}`}
               className={`press relative flex h-[78px] w-[78px] items-center justify-center rounded-full border-4 bg-panel text-ink shadow-[0_6px_30px_rgba(255,122,31,0.25)] disabled:opacity-40 ${
                 frames.length > 0 ? "anim-ring-pulse border-accent" : "border-line2"
               }`}
@@ -316,7 +407,7 @@ export default function Scanner({ onReady, onDemo, demoBusy }: Props) {
           {/* processar */}
           <div className="flex w-28 flex-col items-end gap-1.5">
             <button
-              onClick={() => canProcess && onReady(frames)}
+              onClick={() => canProcess && onReady(frames, mode, subject)}
               disabled={!canProcess}
               className={`press flex items-center gap-2 rounded-md px-3.5 py-2 text-sm font-bold ${
                 canProcess ? "bg-accent text-deep shadow-[0_4px_24px_rgba(255,122,31,0.4)]" : "cursor-not-allowed bg-panel2 text-dim"
@@ -326,7 +417,7 @@ export default function Scanner({ onReady, onDemo, demoBusy }: Props) {
               <span className="hidden sm:inline">Modelar</span>
             </button>
             <span className="text-right font-mono text-[10px] tracking-wide text-dim">
-              {canProcess ? "pronto p/ reconstruir" : `mín. ${MIN_FRAMES} quadros`}
+              {canProcess ? "pronto p/ reconstruir" : `${frames.length}/${minFrames} fotos guiadas`}
             </span>
           </div>
         </div>
@@ -336,12 +427,17 @@ export default function Scanner({ onReady, onDemo, demoBusy }: Props) {
           <div className="flex gap-2 overflow-x-auto pb-1">
             {frames.length === 0 ? (
               <p className="w-full py-1 text-center font-mono text-[11px] tracking-wide text-dim">
-                Toque no obturador e gire <IconOrbit size={12} className="mb-0.5 inline text-scan" /> o objeto — segure para rajada contínua.
+                Toque no obturador e mova a câmera <IconOrbit size={12} className="mb-0.5 inline text-scan" /> ao redor do objeto imóvel.
               </p>
             ) : (
               frames.map((f, i) => (
                 <div key={i} className="anim-pop group relative shrink-0">
-                  <img src={f.url} alt={`quadro ${i + 1}`} className="h-16 w-12 rounded border border-line object-cover" />
+                  <img
+                    src={f.url}
+                    alt={`quadro ${i + 1}`}
+                    title={f.quality && !f.quality.acceptable ? "Foto possivelmente desfocada ou com exposição ruim" : "Foto adequada"}
+                    className={`h-16 w-12 rounded border object-cover ${f.quality && !f.quality.acceptable ? "border-danger" : "border-line"}`}
+                  />
                   <button
                     onClick={() => removeFrame(i)}
                     aria-label={`Remover quadro ${i + 1}`}

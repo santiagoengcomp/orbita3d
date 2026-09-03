@@ -10,7 +10,7 @@ import {
   nextScanName,
   saveScan,
 } from "./lib/storage";
-import type { ModelData, SavedScan, ScanFrame, ScanMeta, Stage } from "./lib/types";
+import type { ModelData, ReconstructionMode, SavedScan, ScanFrame, ScanMeta, ScanSubject, Stage } from "./lib/types";
 import {
   IconAlert,
   IconCheck,
@@ -31,15 +31,15 @@ interface BeforeInstallPromptEvent extends Event {
 }
 
 const STEPS_RAIL = [
-  { icon: <IconOrbit size={15} />, title: "Orbite o objeto", desc: "12–24 capturas ao redor" },
+  { icon: <IconOrbit size={15} />, title: "Orbite com a câmera", desc: "24 fotos com sobreposição" },
   { icon: <IconSun size={15} />, title: "Luz difusa", desc: "sem sombras duras" },
-  { icon: <IconHand size={15} />, title: "Gire a peça", desc: "mantenha o telefone parado" },
-  { icon: <IconCube size={15} />, title: "Reconstrua", desc: "hull + textura + malha" },
+  { icon: <IconHand size={15} />, title: "Objeto imóvel", desc: "mova somente o telefone" },
+  { icon: <IconCube size={15} />, title: "Reconstrua", desc: "profundidade + malha + textura" },
 ];
 
 export default function App() {
   const [stage, setStage] = useState<Stage>("scan");
-  const [pending, setPending] = useState<{ frames: ScanFrame[]; meta: ScanMeta } | null>(null);
+  const [pending, setPending] = useState<{ frames: ScanFrame[]; meta: ScanMeta; mode: ReconstructionMode; subject: ScanSubject } | null>(null);
   const [model, setModel] = useState<ModelData | null>(null);
   const [meta, setMeta] = useState<ScanMeta | null>(null);
   const [gallery, setGallery] = useState<SavedScan[]>(() => loadScans());
@@ -63,6 +63,10 @@ export default function App() {
     return () => window.removeEventListener("beforeinstallprompt", handler);
   }, []);
 
+  useEffect(() => () => {
+    if (model?.kind === "photogrammetry") URL.revokeObjectURL(model.glb);
+  }, [model]);
+
   const installApp = async () => {
     if (!installEvt) {
       showToast('No Chrome Android: menu ⋮ → "Adicionar à tela inicial".');
@@ -76,14 +80,16 @@ export default function App() {
 
   /* ---------------- fluxo ---------------- */
   const handleFrames = useCallback(
-    (frames: ScanFrame[]) => {
+    (frames: ScanFrame[], mode: ReconstructionMode, subject: ScanSubject) => {
       const m: ScanMeta = {
         id: newId(),
         name: nextScanName(gallery),
         createdAt: Date.now(),
         frameCount: frames.length,
+        mode,
+        subject,
       };
-      setPending({ frames, meta: m });
+      setPending({ frames, meta: m, mode, subject });
       setStage("processing");
     },
     [gallery]
@@ -101,7 +107,7 @@ export default function App() {
         frameCount: frames.length,
         demo: true,
       };
-      setPending({ frames, meta: m });
+      setPending({ frames, meta: m, mode: "local", subject: "object" });
       setStage("processing");
     } catch {
       showToast("Não foi possível preparar o objeto de demonstração.");
@@ -124,10 +130,10 @@ export default function App() {
     [pending, gallery]
   );
 
-  const handleProcessingError = useCallback(() => {
+  const handleProcessingError = useCallback((message?: string) => {
     setStage("scan");
     setPending(null);
-    showToast("Falha ao processar os quadros. Tente capturar novamente.");
+    showToast(message || "Falha ao processar os quadros. Tente capturar novamente.");
   }, [showToast]);
 
   const reopenScan = useCallback(
@@ -156,6 +162,8 @@ export default function App() {
         setPending({
           frames,
           meta: { id: scan.id, name: scan.name, createdAt: scan.createdAt, frameCount: scan.frameCount || scan.frames.length, demo: scan.demo },
+          mode: "local",
+          subject: "object",
         });
         setStage("processing");
       } catch {
@@ -285,7 +293,7 @@ export default function App() {
               ))}
             </ul>
             <p className="mt-3 rounded-md border border-scan/25 bg-scan/5 p-2.5 font-mono text-[10px] leading-relaxed text-scan">
-              ◈ novo: a silhueta de cada quadro vira o volume do modelo (visual hull) — o objeto ganha forma real, visto de todos os ângulos.
+              ◈ modo real: COLMAP localiza cada câmera e o OpenMVS calcula profundidade, superfície e textura.
             </p>
           </div>
 
@@ -334,7 +342,7 @@ export default function App() {
         <main className="relative min-h-0 min-w-0 flex-1">
           {stage === "scan" && <Scanner onReady={handleFrames} onDemo={handleDemo} demoBusy={demoBusy} />}
           {stage === "processing" && pending && (
-            <Processing frames={pending.frames} onDone={handleProcessed} onError={handleProcessingError} />
+            <Processing frames={pending.frames} mode={pending.mode} subject={pending.subject} onDone={handleProcessed} onError={handleProcessingError} />
           )}
           {stage === "view" && model && meta && (
             <Viewer
@@ -350,9 +358,9 @@ export default function App() {
       {/* ---------- rodapé ---------- */}
       <footer className="relative z-10 flex items-center justify-between border-t border-line bg-bg/70 px-4 py-2 font-mono text-[9.5px] tracking-[0.14em] text-dim backdrop-blur md:px-6">
         <span>
-          ÓRBITA · PWA <span className="text-scan">v2.0</span> · PROCESSAMENTO 100% LOCAL
+          ÓRBITA · PWA <span className="text-scan">v3.1</span> · PROCESSAMENTO LOCAL
         </span>
-        <span className="hidden sm:inline">WEBGL · THREE.JS · VISUAL HULL</span>
+        <span className="hidden sm:inline">COLMAP · OPENMVS · THREE.JS</span>
       </footer>
 
       {/* ---------- toast ---------- */}
